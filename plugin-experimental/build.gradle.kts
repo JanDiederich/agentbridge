@@ -16,29 +16,46 @@ repositories {
     }
 }
 
+// The target release decides which classpath requests the jar layout needs (2025.3 = 253 ships
+// lucene in lib/modules/, auto-included; 2026.1 = 261 moved lucene-common into lib/, opt-in). See
+// IntelliJTargetBuild for the property forms it accepts: a value that names no build number fails
+// the configuration naming the property, instead of compiling against a release nobody chose.
+val localIdePath = providers.gradleProperty("intellijPlatform.localPath").orNull?.takeIf { it.isNotBlank() }
+val intellijPlatformVersion = providers.gradleProperty("intellijPlatformVersion").get()
+val targetBuild = if (localIdePath != null) {
+    val buildFile = File(localIdePath, "build.txt")
+    IntelliJTargetBuild.fromBuildFile(
+        buildFile.takeIf { file -> file.isFile }?.readText(),
+        buildFile.absolutePath,
+    )
+} else {
+    IntelliJTargetBuild.fromVersionString(intellijPlatformVersion, "intellijPlatformVersion")
+}
+
 dependencies {
     intellijPlatform {
         // A blank value (e.g. `-PintellijPlatform.localPath=` passed on the command line to opt
         // out of a broken local IDE without editing ~/.gradle/gradle.properties) must be treated
         // as unset, not as a literal empty path passed to local().
-        val localPath = providers.gradleProperty("intellijPlatform.localPath").orNull?.takeIf { it.isNotBlank() }
-        if (localPath != null) {
-            local(localPath)
+        if (localIdePath != null) {
+            local(localIdePath)
         } else {
-            // Compile against the same version as plugin-core (see gradle.properties → intellijPlatformVersion).
-            // IU 2026.1+ moved intellij.libraries.lucene.common.jar from lib/modules/ (auto-included)
-            // to lib/ (not auto-included), so it must be declared explicitly via bundledLibrary below.
-            intellijIdeaUltimate(providers.gradleProperty("intellijPlatformVersion").get())
+            // Compile against the same version as plugin-core (see gradle.properties → intellijPlatformVersion),
+            // so the two plugin modules always share one target release.
+            intellijIdeaUltimate(intellijPlatformVersion)
         }
         testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
         bundledPlugin("com.intellij.java")
         bundledPlugin("Git4Idea")
         bundledPlugin("org.jetbrains.plugins.terminal")
         bundledPlugin("com.intellij.database")
-        // Required in IU 2026.1+ (moved from lib/modules/ to lib/). IU 2026.2 removed the jar
-        // entirely, so only request it when we know it exists — see plugin-core/build.gradle.kts
-        // for the matching guard and rationale.
-        if (localPath == null || file("$localPath/lib/intellij.libraries.lucene.common.jar").exists()) {
+        // Required in IU 2026.1+ (lucene-common moved from lib/modules/ to lib/). 2025.3 has no such
+        // jar in lib/ and needs no request, and IU 2026.2+ removed it from lib/ entirely, so local
+        // IDE installs are guarded by file existence — see plugin-core/build.gradle.kts for the
+        // matching guard and rationale.
+        if (targetBuild >= 261
+            && (localIdePath == null || file("$localIdePath/lib/intellij.libraries.lucene.common.jar").exists())
+        ) {
             bundledLibrary("lib/intellij.libraries.lucene.common.jar")
         }
     }

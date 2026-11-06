@@ -14,10 +14,14 @@ repositories {
 }
 
 dependencies {
-    // No external dependencies needed for these utilities.
-    // buildSrc is a separate build: the root project's allprojects block and its
-    // gradle.properties do not reach it, so the test stack is declared here and the shared
-    // JUnit version is read from the file rather than duplicated.
+    // No external (Maven) dependencies: buildSrc is a separate build, so the root project's
+    // allprojects block and its gradle.properties do not reach it — the test stack is declared
+    // here, and the shared JUnit version is read from the file rather than duplicated.
+    //
+    // gradleApi() is implicit when the main build compiles buildSrc, which is why the utilities
+    // can import org.gradle.api.* with nothing declared. Declaring it makes `gradle -p buildSrc
+    // test` work, which is the only way to run these unit tests on their own.
+    implementation(gradleApi())
     val rootProperties = Properties().also { properties ->
         file("../gradle.properties").inputStream().use { stream -> properties.load(stream) }
     }

@@ -33,20 +33,39 @@ repositories {
     }
 }
 
+// The IntelliJ release this module is built against decides which classpath requests the jar
+// layout needs, so the target is resolved once here: 2025.3 (253) ships JCEF, lucene and the VCS
+// modules in the auto-included jars; 2026.1 (261) moved lucene-common from lib/modules/ into lib/;
+// 2026.2 (262) split JCEF out of the boot classpath and stopped auto-including the lib/ product
+// modules; 2026.3 (263) moved the VCS log implementation into a bundled plugin.
+// IntelliJTargetBuild maps every accepted property form to that build number and fails on a value
+// that names none, instead of letting a typo compile the plugin against the wrong release.
+val localIdePath = providers.gradleProperty("intellijPlatform.localPath").orNull?.takeIf { it.isNotBlank() }
+val intellijPlatformVersion = providers.gradleProperty("intellijPlatformVersion").get()
+val targetBuild = if (localIdePath != null) {
+    val buildFile = File(localIdePath, "build.txt")
+    IntelliJTargetBuild.fromBuildFile(
+        buildFile.takeIf { file -> file.isFile }?.readText(),
+        buildFile.absolutePath,
+    )
+} else {
+    IntelliJTargetBuild.fromVersionString(intellijPlatformVersion, "intellijPlatformVersion")
+}
+
 dependencies {
     intellijPlatform {
         // A blank value (e.g. `-PintellijPlatform.localPath=` passed on the command line to opt
         // out of a broken local IDE without editing ~/.gradle/gradle.properties) must be treated
         // as unset, not as a literal empty path passed to local().
-        val localPath = providers.gradleProperty("intellijPlatform.localPath").orNull?.takeIf { it.isNotBlank() }
-        if (localPath != null) {
-            local(localPath)
+        if (localIdePath != null) {
+            local(localIdePath)
         } else {
             // Compile against the latest stable IDE to catch API removals early and
             // because IU 2026.1+ moved intellij.libraries.lucene.common.jar from
             // lib/modules/ (auto-included) to lib/ (opt-in, see bundledLibrary below).
-            // The minimum *runtime* version is still 2025.3 as declared by sinceBuild="253".
-            intellijIdeaUltimate(providers.gradleProperty("intellijPlatformVersion").get())
+            // The minimum *runtime* version is still 2025.3 as declared by sinceBuild="253",
+            // and 2025.3 (IU-2025.3 / 253.x) is a supported build target for the same gates.
+            intellijIdeaUltimate(intellijPlatformVersion)
         }
         testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
         bundledPlugin("com.intellij.java")
@@ -55,33 +74,44 @@ dependencies {
         // JCEF (com.intellij.ui.jcef.*, org.cef.*) shipped on the auto-included boot classpath
         // through IU 2026.1. Starting with build 262 (2026.2) it moved into a separately
         // class-loaded bundled plugin (id com.intellij.modules.jcef), so it must be requested
-        // explicitly to stay resolvable on the compile classpath. Harmless no-op on older versions.
-        bundledPlugin("com.intellij.modules.jcef")
+        // explicitly to stay resolvable where the plugin compiles. 2026.1 resolves the request as a
+        // no-op (CI compiles at 2026.1.3 with it); 2025.3 has no such plugin id, so it is not asked
+        // for there — the classes come from the boot classpath jars.
+        if (targetBuild >= 261) {
+            bundledPlugin("com.intellij.modules.jcef")
+        }
         // com.intellij.dvcs.repo.Repository / AbstractRepositoryManager (supertypes of
         // GitRepository) and com.intellij.vcs.log.impl.VcsProjectLog live in these product
-        // modules. IU 262 (2026.2) stopped auto-including every lib/*.jar product module on the
-        // compile classpath, so request them explicitly. Harmless no-op on older versions where
-        // they were already auto-included.
-        bundledModule("intellij.platform.vcs.dvcs")
-        bundledModule("intellij.platform.vcs.dvcs.impl")
-        bundledModule("intellij.platform.vcs.log.impl")
+        // modules. IU 262 (2026.2) stopped auto-including every lib/*.jar product module in the
+        // plugin's compilation classpath, so request them explicitly. Below 262 they are already
+        // on the classpath from the auto-included jars.
+        if (targetBuild >= 262) {
+            bundledModule("intellij.platform.vcs.dvcs")
+            bundledModule("intellij.platform.vcs.dvcs.impl")
+            bundledModule("intellij.platform.vcs.log.impl")
+        }
         // IU 263 (2026.3) moved the VCS log implementation out of lib/ into the bundled
         // platform-vcs-plugin, and bundledModule() contributes only the requested module's
         // own jar: the dependency edges in product-info.json are not followed. So the
         // modules FileNavigator.kt, GitStageTool.java and GetProblemsTool.java link against
         // have to be named as well — VcsLogDataKeys, CommitId and VcsLogDataProvider are in
         // intellij.platform.vcs.log, HashImpl in intellij.platform.vcs.impl.shared,
-        // ChangesViewManager in intellij.platform.vcs.impl. All three module ids also exist
-        // in 261, where the app classpath already provides them, so these are harmless
-        // duplicates on the CI target.
-        bundledModule("intellij.platform.vcs.log")
-        bundledModule("intellij.platform.vcs.impl.shared")
-        bundledModule("intellij.platform.vcs.impl")
+        // ChangesViewManager in intellij.platform.vcs.impl. 2026.1 and 2026.2 know these ids
+        // and the app classpath already provides the classes, and 2025.3 has no such ids, so
+        // the request is gated to the release that needs it.
+        if (targetBuild >= 263) {
+            bundledModule("intellij.platform.vcs.log")
+            bundledModule("intellij.platform.vcs.impl.shared")
+            bundledModule("intellij.platform.vcs.impl")
+        }
         // In IU-2026.1+, intellij.libraries.lucene.common.jar moved from lib/modules/ (auto-included)
         // to lib/ (not auto-included). Add it explicitly so Lucene packages resolve in both versions.
-        // IU 2026.2 removed the jar from lib/ entirely, so only request it when we know it exists —
-        // an unconditional bundledLibrary() call here would break every local 2026.2 build outright.
-        if (localPath == null || file("$localPath/lib/intellij.libraries.lucene.common.jar").exists()) {
+        // 2025.3 keeps lucene in lib/modules/, where the plugin classpath picks it up by itself, and
+        // has no such jar in lib/ to request. Local IDE installs are guarded by file existence as
+        // well, because a non-IU local install (PyCharm, CLion) has its own layout.
+        if ((targetBuild >= 261)
+            && (localIdePath == null || file("$localIdePath/lib/intellij.libraries.lucene.common.jar").exists())
+        ) {
             bundledLibrary("lib/intellij.libraries.lucene.common.jar")
         }
     }
