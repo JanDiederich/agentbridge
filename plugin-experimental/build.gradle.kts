@@ -49,11 +49,12 @@ dependencies {
         bundledPlugin("Git4Idea")
         bundledPlugin("org.jetbrains.plugins.terminal")
         bundledPlugin("com.intellij.database")
-        // Required in IU 2026.1+ (lucene-common moved from lib/modules/ to lib/). 2025.3 has no such
-        // jar in lib/ and needs no request, and IU 2026.2+ removed it from lib/ entirely, so local
-        // IDE installs are guarded by file existence — see plugin-core/build.gradle.kts for the
-        // matching guard and rationale.
-        if (targetBuild >= 261
+        // Required in IU 2026.1+ (lucene-common moved from lib/modules/, auto-included, to lib/,
+        // opt-in). 2025.3 keeps lucene in lib/modules/ and has no such jar in lib/ to request. Local
+        // IDE installs are additionally guarded by file existence, because a non-IU local install
+        // (PyCharm, CLion) has its own layout — see plugin-core/build.gradle.kts for the matching
+        // guard and rationale.
+        if ((targetBuild >= 261)
             && (localIdePath == null || file("$localIdePath/lib/intellij.libraries.lucene.common.jar").exists())
         ) {
             bundledLibrary("lib/intellij.libraries.lucene.common.jar")
