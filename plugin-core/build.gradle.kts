@@ -253,24 +253,47 @@ tasks.named("prepareSandbox") {
     }
 }
 
-fun runProcess(workDir: File, vararg cmd: String) {
-    val exit = ProcessBuilder(*cmd).directory(workDir).inheritIO().start().waitFor()
-    if (exit != 0) error("Command failed (exit $exit): ${cmd.joinToString(" ")}")
+// chat-ui and js-tests are built with npm, which this build has to start itself.
+// NpmToolchain (buildSrc) resolves it, because a Gradle daemon inherits the environment of the
+// process that launched it — the IDE — not a login shell: a node installed with nvm is
+// invisible to it, and the npm on its PATH dies on its own `#!/usr/bin/env node` shebang.
+// Set npm.dir in ~/.gradle/gradle.properties to the bin directory holding npm and node when a
+// version manager keeps them off the PATH the IDE passes to the daemon.
+val npmToolchain: NpmToolchain by lazy {
+    NpmToolchain.resolve(providers.gradleProperty(NpmToolchain.BIN_DIR_PROPERTY).orNull)
 }
 
-fun runNpm(workDir: File, vararg args: String) {
-    val command = if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) {
-        val commandProcessor = System.getenv("ComSpec")?.takeIf { it.isNotBlank() } ?: "cmd.exe"
-        arrayOf(commandProcessor, "/d", "/c", "npm", *args)
-    } else {
-        arrayOf("npm", *args)
+/**
+ * Install a package directory's npm dependencies when node_modules is missing or older than its
+ * lock file, so a Gradle build works on a fresh clone. CI installs with npm before Gradle runs,
+ * and [NpmToolchain.needsInstall] then skips installing instead of repeating it.
+ */
+fun installNpmDependencies(name: String, packageDir: File, label: String): TaskProvider<Task> = tasks.register(name) {
+    group = "tooling"
+    description = "Install npm dependencies for $label when missing or stale"
+    // The lock file is the only input: it pins what node_modules must contain.
+    inputs.file(File(packageDir, "package-lock.json"))
+    val nodeModules = File(packageDir, "node_modules")
+    // A stamp file rather than node_modules as the output: hashing that directory on every
+    // up-to-date check is slow. Its content names the npm that installed the packages, so
+    // switching node versions reruns the task, and `npm ci` deletes node_modules with the stamp.
+    val stamp = File(nodeModules, ".gradle-npm-install")
+    outputs.file(stamp)
+    doLast {
+        npmToolchain.ensureDependencies(packageDir)
+        stamp.writeText(npmToolchain.describe())
     }
-    runProcess(workDir, *command)
 }
+
+val installChatUiDeps = installNpmDependencies("installChatUiDeps", file("chat-ui"), "chat-ui")
+val installJsTestDeps = installNpmDependencies("installJsTestDeps", file("js-tests"), "js-tests")
 
 // Build chat-ui TypeScript → bundled JS + copy static assets
-val buildChatUi by tasks.registering {
+val buildChatUi = tasks.register("buildChatUi") {
     val outputDir = layout.buildDirectory.dir("generated/resources/chat-ui/chat")
+    group = "chat-ui"
+    description = "Compile chat-ui and copy it into generated resources"
+    dependsOn(installChatUiDeps)
     inputs.dir("chat-ui/src")
     outputs.dir(outputDir)
 
@@ -278,7 +301,7 @@ val buildChatUi by tasks.registering {
         // Ensure dist exists
         file("chat-ui/dist").mkdirs()
 
-        runNpm(file("chat-ui"), "run", "build")
+        npmToolchain.run(file("chat-ui"), listOf("run", "build"))
 
         // Sync to generated resources directory
         copy {
@@ -292,14 +315,32 @@ val buildChatUi by tasks.registering {
 }
 
 // Run chat-ui JavaScript tests (Vitest + happy-dom)
-val jsTest by tasks.registering {
+val jsTest = tasks.register("jsTest") {
     group = "verification"
     description = "Run chat-ui JavaScript unit tests (Vitest)"
-    inputs.dir("chat-ui/src")
-    inputs.dir("js-tests")
+    dependsOn(installJsTestDeps)
+    // The sources Vitest loads. node_modules is excluded because installJsTestDeps owns it and
+    // hashing it as an input on every check is slow; coverage is Vitest's own output.
+    inputs.files(fileTree("chat-ui/src"))
+    inputs.files(fileTree("js-tests") {
+        exclude("node_modules/**")
+        exclude("coverage/**")
+    })
+    // Declaring Vitest's JSON results as the output makes the task up-to-date-checkable, so the
+    // tests rerun when a test source changes and Gradle stops reporting the task as one that
+    // "has not declared any outputs" with "caching disabled".
+    val resultsFile = layout.buildDirectory.file("test-results/jsTest/results.json")
+    outputs.file(resultsFile)
 
     doLast {
-        runNpm(file("js-tests"), "test")
+        val results = resultsFile.get().asFile
+        results.parentFile?.mkdirs()
+        // Two reporters: `default` keeps the human summary in the build log, `json` writes the
+        // file declared as this task's output.
+        npmToolchain.run(
+            file("js-tests"),
+            listOf("test", "--", "--reporter=default", "--reporter=json", "--outputFile.json=${results.absolutePath}"),
+        )
     }
 }
 
