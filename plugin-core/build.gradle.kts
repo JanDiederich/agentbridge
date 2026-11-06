@@ -65,6 +65,18 @@ dependencies {
         bundledModule("intellij.platform.vcs.dvcs")
         bundledModule("intellij.platform.vcs.dvcs.impl")
         bundledModule("intellij.platform.vcs.log.impl")
+        // IU 263 (2026.3) moved the VCS log implementation out of lib/ into the bundled
+        // platform-vcs-plugin, and bundledModule() contributes only the requested module's
+        // own jar: the dependency edges in product-info.json are not followed. So the
+        // modules FileNavigator.kt, GitStageTool.java and GetProblemsTool.java link against
+        // have to be named as well — VcsLogDataKeys, CommitId and VcsLogDataProvider are in
+        // intellij.platform.vcs.log, HashImpl in intellij.platform.vcs.impl.shared,
+        // ChangesViewManager in intellij.platform.vcs.impl. All three module ids also exist
+        // in 261, where the app classpath already provides them, so these are harmless
+        // duplicates on the CI target.
+        bundledModule("intellij.platform.vcs.log")
+        bundledModule("intellij.platform.vcs.impl.shared")
+        bundledModule("intellij.platform.vcs.impl")
         // In IU-2026.1+, intellij.libraries.lucene.common.jar moved from lib/modules/ (auto-included)
         // to lib/ (not auto-included). Add it explicitly so Lucene packages resolve in both versions.
         // IU 2026.2 removed the jar from lib/ entirely, so only request it when we know it exists —

@@ -37,6 +37,10 @@ internal fun statusBorderColor(status: EditorNotificationPanel.Status): java.awt
     EditorNotificationPanel.Status.Warning -> com.intellij.util.ui.JBUI.CurrentTheme.Banner.WARNING_BORDER_COLOR
     EditorNotificationPanel.Status.Error -> com.intellij.util.ui.JBUI.CurrentTheme.Banner.ERROR_BORDER_COLOR
     EditorNotificationPanel.Status.Promo -> com.intellij.util.ui.JBUI.CurrentTheme.Banner.INFO_BORDER_COLOR
+    else -> {
+        // Fallback to info border color for unknown statuses
+        com.intellij.util.ui.JBUI.CurrentTheme.Banner.INFO_BORDER_COLOR
+    }
 }
 
 /**
